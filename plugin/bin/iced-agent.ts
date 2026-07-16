@@ -212,9 +212,13 @@ async function runStep(appId: string, window: string, step: Step): Promise<strin
       return r.ok ? null : fail(r, "intent");
     }
     case "expect": {
-      const r = await send(appId, { cmd: "expect", cond: v });
+      // On a live app nothing is synchronous — intents/clicks apply on the
+      // next runtime beat. A recipe `expect` is therefore "eventually, soon":
+      // it rides the bridge's `wait` with a short timeout. (The in-process
+      // lane keeps single-shot semantics; nothing is async there.)
+      const r = await send(appId, { cmd: "wait", cond: v, timeout_ms: 3000 });
       if (!r.ok) return fail(r, "expect");
-      return passed(r) ? null : "condition false";
+      return passed(r) ? null : "condition false (within 3s)";
     }
     case "wait": {
       const r = await send(appId, { cmd: "wait", cond: v.cond, timeout_ms: v.timeout_ms ?? 5000 });
