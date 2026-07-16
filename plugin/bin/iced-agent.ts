@@ -2,7 +2,7 @@
 // iced-agent CLI — one request/response against the loopback bridge.
 // Program output goes to stdout (console.log is correct here, not tracing).
 
-import { DEFAULT_APP_ID, send } from "./client.ts";
+import { DEFAULT_APP_ID, send, type Response } from "./client.ts";
 
 const USAGE = `iced-agent <cmd> [args...]  — drive the native iced shell via the loopback bridge
 
@@ -27,6 +27,7 @@ Commands:
   expect [same cond flags as wait]       assert a condition now
   windows                                list windows and bounds
   a11y                                   dump the AccessKit tree pushed to the OS
+  run <recipe.json | ->                  execute a recipe (per-step report; exit = failures)
 
 Examples:
   iced-agent find --role button --name Forge
@@ -35,6 +36,7 @@ Examples:
   iced-agent press enter --mod ctrl
   iced-agent state section
   iced-agent shot --out /tmp/app.png
+  iced-agent run qa/nav-smoke.json
 `;
 
 interface Parsed {
@@ -156,6 +158,98 @@ function buildCmd(name: string, p: Parsed): object {
   }
 }
 
+// --- Recipe runner: pure client-side composition over the existing bridge. ---
+
+// A recipe step is externally tagged: a single-key object like {click:{...}}.
+type Step = Record<string, any>;
+
+function stepSummary(step: Step): string {
+  const kind = Object.keys(step)[0];
+  const v = step[kind];
+  switch (kind) {
+    case "click":
+      return `click ${v.role} "${v.name}"`;
+    case "type":
+      return `type "${v}"`;
+    case "press":
+      return `press ${v.key}${v.mods?.length ? ` [${v.mods.join(",")}]` : ""}`;
+    case "intent":
+      return `intent ${JSON.stringify(v)}`;
+    case "expect":
+      return `expect ${JSON.stringify(v)}`;
+    case "wait":
+      return `wait ${JSON.stringify(v.cond)}`;
+    default:
+      return kind ?? "(empty step)";
+  }
+}
+
+// Run one step over the bridge; returns null on success or an error string.
+async function runStep(appId: string, window: string, step: Step): Promise<string | null> {
+  const kind = Object.keys(step)[0];
+  const v = step[kind];
+  const fail = (r: Response, what: string) => r.error ?? `${what} failed`;
+  const passed = (r: Response) => (r.result as { pass?: boolean })?.pass === true;
+  switch (kind) {
+    case "click": {
+      const found = await send(appId, { cmd: "find", window, role: v.role, name: v.name, text: null });
+      if (!found.ok) return fail(found, "find");
+      const matches = (found.result as { matches?: Array<{ ref: string }> })?.matches ?? [];
+      if (matches.length === 0) return `no ${v.role} named "${v.name}"`;
+      const clicked = await send(appId, { cmd: "click", target: { ref: matches[0].ref, x: null, y: null } });
+      return clicked.ok ? null : fail(clicked, "click");
+    }
+    case "type": {
+      const r = await send(appId, { cmd: "type", text: v });
+      return r.ok ? null : fail(r, "type");
+    }
+    case "press": {
+      const r = await send(appId, { cmd: "press", key: v.key, modifiers: v.mods ?? [] });
+      return r.ok ? null : fail(r, "press");
+    }
+    case "intent": {
+      const r = await send(appId, { cmd: "intent", intent: v });
+      return r.ok ? null : fail(r, "intent");
+    }
+    case "expect": {
+      const r = await send(appId, { cmd: "expect", cond: v });
+      if (!r.ok) return fail(r, "expect");
+      return passed(r) ? null : "condition false";
+    }
+    case "wait": {
+      const r = await send(appId, { cmd: "wait", cond: v.cond, timeout_ms: v.timeout_ms ?? 5000 });
+      if (!r.ok) return fail(r, "wait");
+      return passed(r) ? null : "timed out";
+    }
+    default:
+      return `unknown step kind '${kind}'`;
+  }
+}
+
+// Execute a recipe; per-step report, stop at first failure. Returns exit code.
+async function runRecipe(appId: string, window: string, path: string): Promise<number> {
+  const text = path === "-" ? await Bun.stdin.text() : await Bun.file(path).text();
+  const recipe = JSON.parse(text) as { name?: string; steps?: Step[] };
+  const steps = recipe.steps ?? [];
+  console.log(`recipe ${recipe.name ?? "(unnamed)"} — ${steps.length} steps`);
+  let failed = false;
+  for (let i = 0; i < steps.length; i++) {
+    const summary = stepSummary(steps[i]);
+    if (failed) {
+      console.log(`skipped ${i + 1} ${summary}`);
+      continue;
+    }
+    const err = await runStep(appId, window, steps[i]);
+    if (err === null) {
+      console.log(`ok ${i + 1} ${summary}`);
+    } else {
+      console.log(`FAIL ${i + 1} ${summary}: ${err}`);
+      failed = true;
+    }
+  }
+  return failed ? 1 : 0;
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h") {
@@ -165,6 +259,15 @@ async function main() {
   const name = argv[0];
   const p = parseArgs(argv.slice(1));
   const appId = p.flags.app ?? DEFAULT_APP_ID;
+
+  if (name === "run") {
+    const path = p.positionals[0];
+    if (!path) {
+      console.error("error: run needs a recipe path (or '-' for stdin)");
+      process.exit(1);
+    }
+    process.exit(await runRecipe(appId, p.flags.window ?? "main", path));
+  }
 
   const cmd = buildCmd(name, p);
   const resp = await send(appId, cmd);

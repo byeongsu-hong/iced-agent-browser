@@ -195,7 +195,7 @@ impl From<iced::Rectangle> for Rect {
 
 /// Curated, side-effect-understood intents — deliberately not the full app
 /// `Message` enum. The app maps each to a real message in its update loop.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Intent {
     Section { name: String },
@@ -206,7 +206,7 @@ pub enum Intent {
 
 /// A condition the `wait`/`expect` tools evaluate against the current snapshot
 /// or state projection.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Cond {
     /// A node of the given role/name (either optional) exists — or must not.

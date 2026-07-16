@@ -93,6 +93,42 @@ MCP (e.g. Claude Code `.mcp.json`):
 loopback-only and unauthenticated by design (dev tool, curated command
 surface); the endpoint dir is created `0700`.
 
+## Recipes
+
+A recipe is a JSON list of steps — a thin composition over the bridge
+vocabulary (`Recipe`/`Step` in `plugin/src/recipe.rs`). Addressing is semantic
+(`role` + `name`); the runner resolves `find → @ref → click` internally.
+
+```json
+{
+  "name": "nav-smoke",
+  "preset": "ui-demo",
+  "steps": [
+    { "click":  { "role": "button", "name": "Chat" } },
+    { "type":   "hello" },
+    { "press":  { "key": "k", "mods": ["ctrl"] } },
+    { "intent": { "section": { "name": "operator" } } },
+    { "expect": { "state_path": { "path": "screen", "equals": "chat" } } },
+    { "expect": { "node": { "role": "tab", "name": "User", "exists": true } } },
+    { "wait":   { "cond": { "node": { "role": "button", "name": "Save", "exists": true } }, "timeout_ms": 5000 } }
+  ]
+}
+```
+
+```bash
+bun plugin/bin/iced-agent.ts run qa/nav-smoke.json   # or: run -  (recipe on stdin)
+```
+
+Per-step report (`ok N …` / `FAIL N …: <error>`); execution stops at the first
+failure (remaining steps print `skipped`), and the exit code is the failure
+count — 0 iff every step passed.
+
+An optional `"lane"` field self-declares where a recipe can run: `"both"`
+(default) = pure UI logic provable in-process by `update()` + `view()`;
+`"fleet"` = needs a living process (global shortcuts, multi-window, real
+node/CEF effects, screenshots, a11y). The `run` command executes either lane
+and ignores the field.
+
 ## Rust-test selectors
 
 The same `sem()` tags drive `iced_test` selectors, so a `Simulator` test

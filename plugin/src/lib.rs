@@ -18,6 +18,8 @@ pub mod logs;
 #[cfg(debug_assertions)]
 pub mod protocol;
 #[cfg(debug_assertions)]
+pub mod recipe;
+#[cfg(debug_assertions)]
 pub mod sem;
 #[cfg(debug_assertions)]
 pub mod selector;
@@ -32,5 +34,7 @@ pub use collect::{Collector, FlatNode, SnapshotSlot, WindowSnapshot, to_accesski
 pub use logs::{LogLine, LogsHandle, RingLayer, ring_layer};
 #[cfg(debug_assertions)]
 pub use protocol::{Cmd, Cond, Intent, Rect, Request, Response, Role, SemNode, Target};
+#[cfg(debug_assertions)]
+pub use recipe::{Lane, Recipe, Step};
 #[cfg(debug_assertions)]
 pub use sem::{Sem, SemProbe, sem};
