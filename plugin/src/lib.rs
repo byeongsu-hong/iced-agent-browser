@@ -20,6 +20,8 @@ pub mod protocol;
 #[cfg(debug_assertions)]
 pub mod sem;
 #[cfg(debug_assertions)]
+pub mod selector;
+#[cfg(debug_assertions)]
 pub mod tools;
 
 #[cfg(debug_assertions)]

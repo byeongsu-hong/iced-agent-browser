@@ -19,6 +19,10 @@ iced = { version = "=0.14.0", default-features = false, features = ["advanced", 
 # The agent fork (via [patch.crates-io]); its `agent` feature re-exports
 # accesskit and the set_tree/inject/last_tree/window_ids seam API.
 iced_winit = { version = "=0.14.0", default-features = false, features = ["agent"] }
+# Widget-tree selection (`Selector`/`Candidate`/`Target`) for the Rust-test
+# `by::role` selectors. Tiny; depends only on iced_core — pulls no second
+# iced_winit into the graph.
+iced_selector = "=0.14.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt", "net", "io-util", "sync", "time", "macros"] }
@@ -28,3 +32,6 @@ base64 = "0.22"
 
 [dev-dependencies]
 tempfile = "3"
+# Headless Simulator for the `by::role` round-trip test. Uses the tiny-skia
+# backend the `iced` dep already enables; brings no iced_winit.
+iced_test = "=0.14.0"

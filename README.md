@@ -93,6 +93,24 @@ MCP (e.g. Claude Code `.mcp.json`):
 loopback-only and unauthenticated by design (dev tool, curated command
 surface); the endpoint dir is created `0700`.
 
+## Rust-test selectors
+
+The same `sem()` tags drive `iced_test` selectors, so a `Simulator` test
+addresses a widget by role + name — not by its brittle visible text:
+
+```rust
+use iced_agent_plugin::selector::by;
+use iced_agent_plugin::protocol::Role;
+
+let mut ui = iced_test::simulator(app.view());
+ui.click(by::role(Role::Button, "Save")).unwrap();   // case-insensitive exact name
+// by::any(Role::TextInput) matches the first node of a role
+assert!(app_saw(Msg::Saved, ui.into_messages()));
+```
+
+`by::role`/`by::any` return an `iced_selector::Selector` yielding a
+`Target::Custom` carrying the `sem` node's bounds, which `click` uses directly.
+
 ## Headless QA on Linux (AT-SPI notes)
 
 Hard-won quirks, each of which cost a debug round:
