@@ -1,10 +1,13 @@
 [package]
 name = "iced-agent-plugin"
 description = "Agent driver for iced apps: semantic tree, synthetic input, screenshots, logs, CLI + MCP — plus real OS AccessKit from the same tree"
-edition.workspace = true
-version.workspace = true
-license.workspace = true
-repository.workspace = true
+# Materialized (not workspace-inherited): consumers pull this crate as a path
+# dependency from THEIR workspace, whose [workspace.package] may not define
+# these keys.
+edition = "2024"
+version = "0.1.0"
+license = "MIT"
+repository = "https://github.com/byeongsu-hong/iced-agent-browser"
 
 [dependencies]
 # `advanced` for the Operation/Widget traits; `tiny-skia` + `x11` so the crate
