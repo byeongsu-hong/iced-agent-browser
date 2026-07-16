@@ -1,0 +1,16 @@
+[workspace]
+resolver = "2"
+members = ["iced-winit", "plugin"]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license = "MIT"
+repository = "https://github.com/byeongsu-hong/iced-agent-browser"
+
+# The agent fork of iced_winit: crates.io 0.14.0 + `// AGENT SEAM` blocks
+# (AccessKit adapter, tree push, synthetic event injection), dev-only via the
+# `agent` feature + debug_assertions. Consumers repeat this patch in their own
+# workspace root — see README.
+[patch.crates-io]
+iced_winit = { path = "iced-winit" }

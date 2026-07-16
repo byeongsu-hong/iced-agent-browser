@@ -1,0 +1,27 @@
+[package]
+name = "iced-agent-plugin"
+description = "Agent driver for iced apps: semantic tree, synthetic input, screenshots, logs, CLI + MCP — plus real OS AccessKit from the same tree"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# `advanced` for the Operation/Widget traits; `tiny-skia` + `x11` so the crate
+# compiles standalone (`cargo test -p iced-agent-plugin`): without a renderer
+# backend iced::Renderer degrades to `()` (not a `core::Renderer`), and Unix
+# hits a display-backend compile_error without x11/wayland. In an app workspace
+# these features simply unify with the app's fuller set.
+iced = { version = "=0.14.0", default-features = false, features = ["advanced", "tiny-skia", "x11", "tokio"] }
+# The agent fork (via [patch.crates-io]); its `agent` feature re-exports
+# accesskit and the set_tree/inject/last_tree/window_ids seam API.
+iced_winit = { version = "=0.14.0", default-features = false, features = ["agent"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt", "net", "io-util", "sync", "time", "macros"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+base64 = "0.22"
+
+[dev-dependencies]
+tempfile = "3"
