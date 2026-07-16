@@ -3,9 +3,10 @@
 //! Three seams: (1) an AccessKit adapter attached to every window at creation,
 //! (2) [`set_tree`] pushing semantic tree updates into that adapter, and
 //! (3) [`inject`] feeding synthetic iced-core events into the same runtime
-//! path real input takes. Everything is process-global because the event loop
-//! owns the windows and the app-side plugin only holds `window::Id`s.
+//! path real input takes. Cross-thread bridge state is process-global, while
+//! platform adapters stay on the event-loop thread that created them.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -13,25 +14,32 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::core::window::Id;
 
-/// Per-window adapter + the winit window it belongs to.
-///
-/// The window is held weakly: a strong clone here would keep the OS window
-/// alive past close, so `WindowEvent::Destroyed` (our cleanup signal) would
-/// never fire.
+/// Per-window adapter, confined to the winit event-loop thread. In particular,
+/// macOS AccessKit adapters own AppKit state and are intentionally `!Send`.
 struct Slot {
     adapter: accesskit_winit::Adapter,
-    window: std::sync::Weak<winit::window::Window>,
-    /// Last tree pushed, replayed on activation and dumpable for QA.
-    last_tree: Arc<Mutex<Option<accesskit::TreeUpdate>>>,
+}
+
+#[derive(Default)]
+struct Local {
+    slots: HashMap<Id, Slot>,
+    winit_to_iced: HashMap<winit::window::WindowId, Id>,
 }
 
 struct Globals {
-    slots: Mutex<HashMap<Id, Slot>>,
-    winit_to_iced: Mutex<HashMap<winit::window::WindowId, Id>>,
+    /// Weak windows remain cross-thread so an injected event can wake redraw
+    /// without extending any native window's lifetime.
+    windows: Mutex<HashMap<Id, std::sync::Weak<winit::window::Window>>>,
+    /// Last trees are shared with both AccessKit activation and bridge reads.
+    last_trees: Mutex<HashMap<Id, Arc<Mutex<Option<accesskit::TreeUpdate>>>>>,
     injected: Mutex<Vec<(Id, crate::core::Event)>>,
     injected_flag: AtomicBool,
     actions_tx: Sender<(Id, accesskit::ActionRequest)>,
     actions_rx: Mutex<Option<Receiver<(Id, accesskit::ActionRequest)>>>,
+}
+
+thread_local! {
+    static LOCAL: RefCell<Local> = RefCell::new(Local::default());
 }
 
 fn globals() -> &'static Globals {
@@ -39,8 +47,8 @@ fn globals() -> &'static Globals {
     G.get_or_init(|| {
         let (tx, rx) = channel();
         Globals {
-            slots: Mutex::new(HashMap::new()),
-            winit_to_iced: Mutex::new(HashMap::new()),
+            windows: Mutex::new(HashMap::new()),
+            last_trees: Mutex::new(HashMap::new()),
             injected: Mutex::new(Vec::new()),
             injected_flag: AtomicBool::new(false),
             actions_tx: tx,
@@ -115,46 +123,55 @@ pub(crate) fn attach(
         },
         Deactivation,
     );
-    let _ = g.winit_to_iced.lock().unwrap().insert(window.id(), id);
-    let _ = g.slots.lock().unwrap().insert(
-        id,
-        Slot {
-            adapter,
-            window: Arc::downgrade(window),
-            last_tree,
-        },
-    );
+    LOCAL.with(|local| {
+        let mut local = local.borrow_mut();
+        let _ = local.winit_to_iced.insert(window.id(), id);
+        let _ = local.slots.insert(id, Slot { adapter });
+    });
+    let _ = g.windows.lock().unwrap().insert(id, Arc::downgrade(window));
+    let _ = g.last_trees.lock().unwrap().insert(id, last_tree);
 }
 
 /// Seam 1: forward every winit window event to the window's adapter.
-pub(crate) fn process_event(
-    winit_id: winit::window::WindowId,
-    event: &winit::event::WindowEvent,
-) {
+pub(crate) fn process_event(winit_id: winit::window::WindowId, event: &winit::event::WindowEvent) {
     let g = globals();
-    let Some(id) = g.winit_to_iced.lock().unwrap().get(&winit_id).copied() else {
-        return;
-    };
-    if let Some(slot) = g.slots.lock().unwrap().get_mut(&id) {
-        if let Some(window) = slot.window.upgrade() {
+    LOCAL.with(|local| {
+        let mut local = local.borrow_mut();
+        let Some(id) = local.winit_to_iced.get(&winit_id).copied() else {
+            return;
+        };
+        let window = g
+            .windows
+            .lock()
+            .unwrap()
+            .get(&id)
+            .and_then(std::sync::Weak::upgrade);
+        if let (Some(slot), Some(window)) = (local.slots.get_mut(&id), window) {
             let _reactor = runtime().enter();
             slot.adapter.process_event(&window, event);
         }
-    }
-    if matches!(event, winit::event::WindowEvent::Destroyed) {
-        let _ = g.slots.lock().unwrap().remove(&id);
-        let _ = g.winit_to_iced.lock().unwrap().remove(&winit_id);
-    }
+        if matches!(event, winit::event::WindowEvent::Destroyed) {
+            let _ = local.slots.remove(&id);
+            let _ = local.winit_to_iced.remove(&winit_id);
+            let _ = g.windows.lock().unwrap().remove(&id);
+            let _ = g.last_trees.lock().unwrap().remove(&id);
+        }
+    });
 }
 
 /// Seam 2: push a semantic tree for a window (app-side plugin calls this).
 pub fn set_tree(id: Id, update: accesskit::TreeUpdate) {
     let g = globals();
-    if let Some(slot) = g.slots.lock().unwrap().get_mut(&id) {
-        *slot.last_tree.lock().unwrap() = Some(update.clone());
-        let _reactor = runtime().enter();
-        slot.adapter.update_if_active(|| update);
+    let last_tree = g.last_trees.lock().unwrap().get(&id).cloned();
+    if let Some(last_tree) = last_tree {
+        *last_tree.lock().unwrap() = Some(update.clone());
     }
+    LOCAL.with(|local| {
+        if let Some(slot) = local.borrow_mut().slots.get_mut(&id) {
+            let _reactor = runtime().enter();
+            slot.adapter.update_if_active(|| update);
+        }
+    });
 }
 
 /// Seam 2: the plugin takes the (single) ActionRequest receiver at boot.
@@ -165,11 +182,11 @@ pub fn take_action_rx() -> Option<Receiver<(Id, accesskit::ActionRequest)>> {
 /// Dump the last tree pushed for a window (the `iced_a11y` tool).
 pub fn last_tree(id: Id) -> Option<accesskit::TreeUpdate> {
     globals()
-        .slots
+        .last_trees
         .lock()
         .unwrap()
         .get(&id)
-        .and_then(|slot| slot.last_tree.lock().unwrap().clone())
+        .and_then(|tree| tree.lock().unwrap().clone())
 }
 
 /// Seam 3: queue a synthetic iced-core event; the loop drains it into the
@@ -178,10 +195,14 @@ pub fn inject(id: Id, event: crate::core::Event) {
     let g = globals();
     g.injected.lock().unwrap().push((id, event));
     g.injected_flag.store(true, Ordering::Release);
-    if let Some(slot) = g.slots.lock().unwrap().get(&id) {
-        if let Some(window) = slot.window.upgrade() {
-            window.request_redraw();
-        }
+    let window = g
+        .windows
+        .lock()
+        .unwrap()
+        .get(&id)
+        .and_then(std::sync::Weak::upgrade);
+    if let Some(window) = window {
+        window.request_redraw();
     }
 }
 
@@ -196,5 +217,5 @@ pub(crate) fn drain_injected() -> Vec<(Id, crate::core::Event)> {
 
 /// Windows currently alive (the `iced_windows` tool).
 pub fn window_ids() -> Vec<Id> {
-    globals().slots.lock().unwrap().keys().copied().collect()
+    globals().windows.lock().unwrap().keys().copied().collect()
 }
